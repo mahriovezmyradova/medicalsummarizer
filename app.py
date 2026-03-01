@@ -5,7 +5,7 @@ from io import BytesIO
 import os
 
 # Import utility modules
-from audio_utils import record_audio, transcribe_with_whisper
+from audio_utils import transcribe_with_whisper, generate_summary_with_gpt
 from pdf_utils import generate_medical_pdf
 
 st.set_page_config(
@@ -183,18 +183,19 @@ with col2:
     # Audio recording using Streamlit's built-in audio recorder
     audio_bytes = st.audio_input("Aufnahme starten", key="audio_recorder")
     
-    if audio_bytes:
+    if audio_bytes and audio_bytes != st.session_state.get('last_processed_audio'):
         st.session_state.audio_bytes = audio_bytes
         st.session_state.recording = False
+        st.session_state.last_processed_audio = audio_bytes
         
-        # Process the audio (mock for now)
-        with st.spinner("Verarbeite Aufnahme..."):
-            # TODO: Implement actual transcription with Whisper
-            # transcript = transcribe_with_whisper(audio_bytes)
-            transcript = "Hier würde das transkribierte Gespräch erscheinen..."
+        # Process the audio
+        with st.spinner("Transkribiere Aufnahme..."):
+            # Get transcript using Whisper
+            transcript = transcribe_with_whisper(audio_bytes)
             
-            # TODO: Generate summary with GPT
-            summary = "Hier würde die KI-generierte Zusammenfassung erscheinen..."
+            # Generate summary using GPT
+            with st.spinner("Generiere Zusammenfassung..."):
+                summary = generate_summary_with_gpt(transcript, st.session_state.patient_data)
             
             st.session_state.recorded_data = {
                 'summary': summary,
