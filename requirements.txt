@@ -1,16 +1,7 @@
+
+
 streamlit>=1.31.0
 python-dateutil>=2.8.2
 reportlab>=4.0.0
 Pillow>=10.0.0
-
-# Optional: Uncomment when implementing audio recording
-# sounddevice>=0.4.6
-# soundfile>=0.12.1
-# numpy>=1.24.0
-
-# Optional: Uncomment when implementing Whisper integration
-# openai>=1.10.0
-# whisper>=1.0.0
-
-# Optional: Alternative PDF library
-# fpdf2>=2.7.0
+openai>=1.10.0
