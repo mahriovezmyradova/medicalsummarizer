@@ -1,14 +1,9 @@
 """summarizer.py
 
-Extractive summarization priority order:
-  1. HuggingFace Inference API  — no local RAM, free tier (Streamlit Cloud)
-  2. Local sentence-transformers — lazy-imported only if HF API unavailable
-  3. First-N fallback            — if neither backend is available
-
-Heavy imports (sentence_transformers, sklearn, torch) are deferred to inside
-the function so they never load at module import time. This prevents the
-`transformers` package from flooding Streamlit's file watcher with torchvision
-errors even when sentence-transformers is present in the environment.
+Extractive summarization priority order (to stay within Streamlit Cloud memory limits):
+  1. HuggingFace Inference API  — no local RAM, free tier
+  2. Local sentence-transformers — only when running locally
+  3. First-N fallback            — if no backend is available
 """
 
 import re
@@ -19,7 +14,14 @@ from typing import List, Optional
 
 _DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
-# Module-level cache — populated lazily on first local-model use
+try:
+    from sentence_transformers import SentenceTransformer as _ST
+    from sklearn.metrics.pairwise import cosine_similarity as _cosine_sim
+    import numpy as np
+    _LOCAL_AVAILABLE = True
+except Exception:
+    _LOCAL_AVAILABLE = False
+
 _cached_model: Optional[object] = None
 _cached_model_name: Optional[str] = None
 
@@ -50,6 +52,7 @@ def _hf_embeddings(sentences: List[str], model_name: str) -> Optional[List]:
         if resp.status_code != 200:
             return None
         data = resp.json()
+        # Response is a list of embedding vectors
         if isinstance(data, list) and data and isinstance(data[0], list):
             return data
         return None
@@ -59,8 +62,6 @@ def _hf_embeddings(sentences: List[str], model_name: str) -> Optional[List]:
 
 def _load_local_model(model_name: str):
     global _cached_model, _cached_model_name
-    # Lazy import — only triggers if we actually reach this code path
-    from sentence_transformers import SentenceTransformer as _ST  # noqa: PLC0415
     if _cached_model is None or _cached_model_name != model_name:
         _cached_model = _ST(model_name)
         _cached_model_name = model_name
@@ -74,23 +75,18 @@ def _cosine(u, v) -> float:
     return dot / (nu * nv) if nu and nv else 0.0
 
 
-def _rank_hf(embeddings: List) -> List[int]:
-    """Rank using pure-Python cosine (for list-of-list embeddings from HF API)."""
+def _rank(embeddings) -> List[int]:
+    """Return sentence indices sorted by centroid score, most central first."""
+    if _LOCAL_AVAILABLE and hasattr(embeddings, "shape"):
+        sim = _cosine_sim(embeddings)
+        scores = sim.sum(axis=1)
+        return list(np.argsort(scores)[::-1])
     n = len(embeddings)
     scores = [
         sum(_cosine(embeddings[i], embeddings[j]) for j in range(n) if i != j)
         for i in range(n)
     ]
     return sorted(range(n), key=lambda i: scores[i], reverse=True)
-
-
-def _rank_local(embeddings) -> List[int]:
-    """Rank using numpy/sklearn cosine (for numpy arrays from sentence-transformers)."""
-    from sklearn.metrics.pairwise import cosine_similarity  # noqa: PLC0415
-    import numpy as np  # noqa: PLC0415
-    sim = cosine_similarity(embeddings)
-    scores = sim.sum(axis=1)
-    return list(np.argsort(scores)[::-1])
 
 
 def _split_sentences(text: str) -> List[str]:
@@ -106,23 +102,26 @@ def extractive_summary(text: str, top_k: int = 5, model_name: str = _DEFAULT_MOD
     if len(sentences) <= top_k:
         return "\n\n".join(sentences)
 
-    # 1. HuggingFace Inference API (zero local RAM — preferred on Streamlit Cloud)
-    hf_emb = _hf_embeddings(sentences, model_name)
-    if hf_emb is not None:
+    embeddings = None
+
+    # 1. HuggingFace Inference API (zero local RAM)
+    embeddings = _hf_embeddings(sentences, model_name)
+
+    # 2. Local sentence-transformers (only viable locally)
+    if embeddings is None and _LOCAL_AVAILABLE:
         try:
-            ranked = _rank_hf(hf_emb)
-            return "\n\n".join(sentences[i] for i in sorted(ranked[:top_k]))
+            model = _load_local_model(model_name)
+            embeddings = model.encode(sentences, convert_to_numpy=True)
+        except Exception:
+            embeddings = None
+
+    if embeddings is not None:
+        try:
+            ranked = _rank(embeddings)
+            selected = sorted(ranked[:top_k])
+            return "\n\n".join(sentences[i] for i in selected)
         except Exception:
             pass
-
-    # 2. Local sentence-transformers (lazy import — only if HF API unavailable)
-    try:
-        model = _load_local_model(model_name)
-        local_emb = model.encode(sentences, convert_to_numpy=True)
-        ranked = _rank_local(local_emb)
-        return "\n\n".join(sentences[i] for i in sorted(ranked[:top_k]))
-    except Exception:
-        pass
 
     # 3. Fallback: first top_k sentences
     return "\n\n".join(sentences[:top_k])
