@@ -7,12 +7,15 @@ reportlab>=4.0.0
 Pillow>=10.0.0
 openai>=1.10.0
 
-# Lightweight runtime deps
-numpy>=1.24.0
-requests>=2.31.0
-boto3>=1.26.0
+# ASR
+openai-whisper>=20231117
 
-# Heavy local models — only install when running locally, NOT on Streamlit Cloud
-# openai-whisper>=20231117   <- pulls PyTorch (~2GB RAM)
-# sentence-transformers>=2.2.2  <- pulls PyTorch (~500MB RAM)
-# scikit-learn>=1.2.2
+# Extractive summarization (BERT)
+sentence-transformers>=2.2.2
+scikit-learn>=1.2.2
+numpy>=1.24.0
+
+# Storage / inference fallback
+requests>=2.31.0
+huggingface-hub>=0.16.4
+boto3>=1.26.0
