@@ -381,7 +381,7 @@ for _k, _v in _defaults.items():
 _, _lc2 = st.columns([8, 1])
 with _lc2:
     _lang_choice = st.radio(
-        "",
+        "Language",
         ["DE", "EN"],
         index=0 if st.session_state.lang == "de" else 1,
         horizontal=True,
