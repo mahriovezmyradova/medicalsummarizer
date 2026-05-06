@@ -6,3 +6,10 @@ python-dateutil>=2.8.2
 reportlab>=4.0.0
 Pillow>=10.0.0
 openai>=1.10.0
+
+# For local whisper transcription and extractive summarization
+whisper @ git+https://github.com/openai/whisper.git
+torch>=1.12.0 ; platform_system != 'Darwin' or platform_machine != 'arm64'
+sentence-transformers>=2.2.2
+scikit-learn>=1.2.2
+numpy>=1.24.0

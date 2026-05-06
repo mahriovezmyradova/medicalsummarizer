@@ -4,6 +4,8 @@ import os
 import sqlite3
 import pandas as pd
 from fpdf import FPDF
+from audio_utils import transcribe_with_whisper, save_audio_file
+from summarizer import extractive_summary
 import time
 import base64
 from io import BytesIO
@@ -638,37 +640,36 @@ with col2:
         st.session_state.last_processed_audio = audio_bytes
         
         with st.spinner("🔄 Verarbeite Aufnahme..."):
-            # Raw transcript from therapy session (no role labels)
-            transcript = """Also ich bin jetzt seit etwa drei Monaten in dieser Situation. Die Kopfschmerzen sind irgendwie immer da, vor allem morgens wenn ich aufwache. Es ist so ein dumpfer Druck, manchmal auch im Nacken. Und diese Müdigkeit... ich komm einfach nicht aus dem Bett. Mein Mann sagt, ich bin so reizbar geworden, dabei will ich das gar nicht.
+            # Save audio to disk and transcribe
+            try:
+                audio_path = save_audio_file(audio_bytes)
+            except Exception as e:
+                st.error(f"Fehler beim Speichern der Audiodatei: {e}")
+                audio_path = None
 
-Nachts lieg ich wach und die Gedanken kreisen. Dann denk ich an die Arbeit, an das Projekt, an alles was ich noch erledigen muss. Eigentlich mag ich meinen Job, aber im Moment ist es einfach zu viel. Früher bin ich gerne Fahrrad gefahren, aber dafür hab ich jetzt keine Kraft mehr.
+            transcript = ""
+            try:
+                transcript = transcribe_with_whisper(audio_bytes, model_name="small", language="de")
+            except Exception as e:
+                st.warning(f"Transkription fehlgeschlagen: {e}")
 
-Die Schmerztabletten helfen vielleicht zwei Stunden, dann kommt alles zurück. Ich will auch nicht zu viele nehmen, das kann doch nicht gut sein. Meine Freundin meinte, ich soll mal zum Arzt gehen, weil das so nicht weitergeht.
-
-Ich weiß auch nicht, vielleicht ist es einfach die Jahreszeit oder so. Aber es fühlt sich an wie ein großer Berg, den ich jeden Tag erklimmen muss. Mein Mann versucht mich zu unterstützen, aber ich merke, dass er sich auch Sorgen macht.
-
-Eigentlich wollte ich heute auch noch einkaufen, aber ich hab mich einfach nicht aufraffen können. Das ist doch nicht normal, oder? Ich meine, ich war früher immer so aktiv und jetzt...
-
-Naja, mal sehen was die Blutuntersuchung ergibt. Vielleicht fehlt mir ja wirklich was, Eisen oder so. Meine Schwester hatte mal Probleme mit der Schilddrüse, das kann ja auch solche Symptome machen.
-
-Ich bin froh, dass ich heute hier bin. Es tut gut, das mal alles auszusprechen. Zu Hause will ich meinen Mann nicht so belasten, der hat selbst genug Stress."""
-
-            # BERT-style extractive summary (just key sentences, no structure)
-            patient_name = patient_name_input or "Die Patientin"
-            summary = f"""Die Patientin leidet seit etwa drei Monaten unter morgendlichen Kopfschmerzen, die sie als dumpfen Druck im Stirn- und Nackenbereich beschreibt. Begleitend besteht eine ausgeprägte Antriebslosigkeit und Erschöpfung, die das Aufstehen erschwert. Der Ehemann habe eine zunehmende Reizbarkeit bemerkt. Schlafstörungen mit nächtlichem Gedankenkreisen werden angegeben.
-
-Beruflich besteht eine hohe Belastung durch ein Projekt, frühere Ausgleichsaktivitäten wie Radfahren können nicht mehr ausgeführt werden. Die Wirkung von Schmerzmitteln sei nur kurzfristig, bei gleichzeitiger Sorge vor zu hohem Konsum. Die Eigeninitiative zur Vorstellung erfolgte auf Anraten einer Freundin.
-
-Die Alltagsbewältigung ist deutlich eingeschränkt, geplante Aktivitäten wie Einkaufen können nicht umgesetzt werden. Die Patientin zeigt sich besorgt über die Veränderung ihres gewohnten Aktivitätsniveaus. Die familiäre Unterstützung ist vorhanden, die Patientin möchte Angehörige jedoch nicht belasten.
-
-Als mögliche Ursache werden Eisenmangel oder Schilddrüsenprobleme vermutet, letztere mit familiärer Vorbelastung. Die Patientin äußert Erleichterung über das Gespräch und die Möglichkeit, die Belastung auszusprechen. Weitere Diagnostik mittels Blutuntersuchung wurde veranlasst, um somatische Ursachen auszuschließen."""
+            # Extractive summary
+            try:
+                summary = extractive_summary(transcript or "", top_k=6)
+                if not summary:
+                    # if extraction gave nothing, fallback to first paragraphs
+                    summary = (transcript or "").strip().split('\n\n')[:6]
+                    summary = "\n\n".join(summary)
+            except Exception as e:
+                st.warning(f"Extraktive Zusammenfassung fehlgeschlagen: {e}")
+                summary = (transcript or "")[:1000]
 
             st.session_state.recorded_data = {
                 'summary': summary,
                 'transcript': transcript,
-                'audio_data': audio_bytes
+                'audio_data': audio_bytes,
+                'audio_path': audio_path
             }
-
 
             # Save conversation if patient exists
             if st.session_state.patient_data.get('patient_name'):
@@ -679,12 +680,12 @@ Als mögliche Ursache werden Eisenmangel oder Schilddrüsenprobleme vermutet, le
                 result = cursor.fetchone()
                 if result:
                     cursor.execute("""
-                        INSERT INTO conversations (patient_id, summary, transcript)
-                        VALUES (?, ?, ?)
-                    """, (result[0], summary, transcript))
+                        INSERT INTO conversations (patient_id, summary, transcript, audio_path)
+                        VALUES (?, ?, ?, ?)
+                    """, (result[0], summary, transcript, audio_path))
                     conn.commit()
                 conn.close()
-            
+
             st.rerun()
     
     if st.session_state.audio_bytes is None:
@@ -750,3 +751,5 @@ if st.session_state.recorded_data:
         st.markdown("---")
         st.markdown("#### <span style='color: rgb(38, 96, 65);'>Audioaufnahme</span>", unsafe_allow_html=True)
         st.audio(st.session_state.recorded_data['audio_data'])
+        if st.session_state.recorded_data.get('audio_path'):
+            st.markdown(f"<div style='font-size:12px; color:#6b7280;'>Gespeichert: {st.session_state.recorded_data['audio_path']}</div>", unsafe_allow_html=True)
