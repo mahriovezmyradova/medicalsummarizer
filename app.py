@@ -713,22 +713,23 @@ with _tab_consult:
                     st.error(f"{t('recordings_section')}: {_e}")
                     _audio_path = None
 
-                # Transcribe
+                # Transcribe — returns (text, error_or_None)
                 _transcript = ""
+                _trans_error = None
                 try:
-                    _transcript = transcribe_with_whisper(
+                    _transcript, _trans_error = transcribe_with_whisper(
                         audio_bytes, model_name="small", language=_whisper_lang
                     )
                 except Exception as _e:
-                    st.warning(f"Transkription: {_e}")
+                    _trans_error = str(_e)
 
                 # Summarize
+                _summary = ""
                 try:
                     _summary = extractive_summary(_transcript or "", top_k=6)
                     if not _summary:
                         _summary = (_transcript or "").strip()
                 except Exception as _e:
-                    st.warning(f"Zusammenfassung: {_e}")
                     _summary = (_transcript or "")[:1000]
 
                 st.session_state.recorded_data = {
@@ -736,6 +737,7 @@ with _tab_consult:
                     "transcript": _transcript,
                     "audio_data": audio_bytes,
                     "audio_path": _audio_path,
+                    "error": _trans_error,  # survives st.rerun()
                 }
 
                 # Persist to DB if patient is saved
@@ -764,16 +766,24 @@ with _tab_consult:
     # ── Latest recording results ──────────────────────────────────────────────
     if st.session_state.recorded_data:
         rd = st.session_state.recorded_data
+
+        # Show any transcription error that survived the rerun
+        if rd.get("error"):
+            st.error(f"Transkription fehlgeschlagen: {rd['error']}")
+
         st.markdown("<hr>", unsafe_allow_html=True)
         st.markdown(
             f"#### <span style='color:{PRIMARY};'>{t('summary_section')}</span>",
             unsafe_allow_html=True,
         )
-        st.markdown(
-            f"<div style='background:#fff;padding:1.2rem;border:1px solid #ddd;"
-            f"border-radius:6px;line-height:1.8;'>{rd['summary']}</div>",
-            unsafe_allow_html=True,
-        )
+        if rd.get("summary"):
+            st.markdown(
+                f"<div style='background:#fff;padding:1.2rem;border:1px solid #ddd;"
+                f"border-radius:6px;line-height:1.8;'>{rd['summary']}</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.caption("—")
 
         # PDF download
         _lang_now = st.session_state.lang
