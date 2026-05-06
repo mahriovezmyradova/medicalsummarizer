@@ -12,7 +12,7 @@ from fpdf import FPDF
 from audio_utils import transcribe_with_whisper, save_audio_file
 from storage_utils import upload_file_to_r2
 from summarizer import extractive_summary
-from auth import init_users, authenticate, list_users, add_user, delete_user
+from auth import init_users, authenticate, list_users, add_user, delete_user, set_password
 
 st.set_page_config(
     page_title="Medical Consultation Summary",
@@ -23,7 +23,7 @@ st.set_page_config(
 # ── Translations ───────────────────────────────────────────────────────────────
 T = {
     "de": {
-        "app_title": "Medizinische Gesprächszusammenfassung",
+        "app_title": "Gesprächsdokumentation",
         "login_title": "Anmelden",
         "username": "Benutzername",
         "password": "Passwort",
@@ -79,10 +79,15 @@ T = {
         "gender_m": "M",
         "gender_f": "W",
         "lang_label": "Sprache",
-        "address": "Clausewitzstr. 2 · 10629 Berlin-Charlottenburg · +49 30 6633110",
+        "pw_change": "Passwort ändern",
+        "pw_new": "Neues Passwort",
+        "pw_save": "Speichern",
+        "pw_cancel": "Abbrechen",
+        "pw_saved": "Passwort gespeichert",
+        "toggle_admin": "Admin",
     },
     "en": {
-        "app_title": "Medical Consultation Summary",
+        "app_title": "Consultation Documentation",
         "login_title": "Sign In",
         "username": "Username",
         "password": "Password",
@@ -138,7 +143,12 @@ T = {
         "gender_m": "M",
         "gender_f": "F",
         "lang_label": "Language",
-        "address": "Clausewitzstr. 2 · 10629 Berlin-Charlottenburg · +49 30 6633110",
+        "pw_change": "Change Password",
+        "pw_new": "New Password",
+        "pw_save": "Save",
+        "pw_cancel": "Cancel",
+        "pw_saved": "Password saved",
+        "toggle_admin": "Admin",
     },
 }
 
@@ -226,9 +236,42 @@ def load_conversations(conn, patient_id: int) -> pd.DataFrame:
     )
 
 
+def _logo_html(width: int = 160) -> str:
+    for _fname, _mime in [("clinic_logo.svg", "image/svg+xml"), ("clinic_logo.png", "image/png")]:
+        if os.path.exists(_fname):
+            import base64 as _b64
+            with open(_fname, "rb") as _f:
+                _data = _b64.b64encode(_f.read()).decode()
+            return (
+                f'<a href="https://revitaclinic.de" target="_blank" rel="noopener">'
+                f'<img src="data:{_mime};base64,{_data}" style="max-width:{width}px;cursor:pointer;">'
+                f'</a>'
+            )
+    return ""
+
+
 def strip_html(text: str) -> str:
     text = re.sub(r"<[^>]+>", "", text)
     return text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&nbsp;", " ").strip()
+
+
+_PDF_CHAR_MAP = {
+    "—": "-", "–": "-",          # em dash, en dash
+    "‘": "'", "’": "'",          # curly single quotes
+    "“": '"', "”": '"',          # curly double quotes
+    "…": "...",                        # ellipsis
+    "•": "-", "·": "-",          # bullet, middle dot
+    "′": "'", "″": '"',          # prime, double prime
+    "×": "x", "÷": "/",         # multiply, divide
+    "’": "'",
+}
+
+
+def _sanitize_pdf(text: str) -> str:
+    """Replace characters outside Latin-1 so Helvetica can render them."""
+    for char, rep in _PDF_CHAR_MAP.items():
+        text = text.replace(char, rep)
+    return text.encode("latin-1", errors="replace").decode("latin-1")
 
 
 def make_pdf(patient_name: str, summary: str, transcript: str, lang: str) -> bytes:
@@ -237,27 +280,27 @@ def make_pdf(patient_name: str, summary: str, transcript: str, lang: str) -> byt
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
 
-    title = T[lang]["app_title"]
+    title = _sanitize_pdf(T[lang]["app_title"])
     pdf.set_font("Helvetica", "B", 13)
     pdf.multi_cell(0, 8, title, align="C")
     pdf.ln(4)
 
     pdf.set_font("Helvetica", "", 10)
-    pdf.multi_cell(0, 6, f"Patient: {patient_name}")
+    pdf.multi_cell(0, 6, _sanitize_pdf(f"Patient: {patient_name}"))
     pdf.multi_cell(0, 6, datetime.now().strftime("%d.%m.%Y  %H:%M"))
     pdf.ln(5)
 
     pdf.set_font("Helvetica", "B", 11)
-    pdf.multi_cell(0, 7, T[lang]["summary_section"])
+    pdf.multi_cell(0, 7, _sanitize_pdf(T[lang]["summary_section"]))
     pdf.set_font("Helvetica", "", 10)
-    pdf.multi_cell(0, 6, strip_html(summary) or "—")
+    pdf.multi_cell(0, 6, _sanitize_pdf(strip_html(summary)) or "-")
     pdf.ln(5)
 
     if transcript:
         pdf.set_font("Helvetica", "B", 11)
-        pdf.multi_cell(0, 7, T[lang]["transcript_section"])
+        pdf.multi_cell(0, 7, _sanitize_pdf(T[lang]["transcript_section"]))
         pdf.set_font("Helvetica", "", 9)
-        pdf.multi_cell(0, 5, strip_html(transcript))
+        pdf.multi_cell(0, 5, _sanitize_pdf(strip_html(transcript)))
 
     return bytes(pdf.output())
 
@@ -337,14 +380,15 @@ for _k, _v in _defaults.items():
 # ── Language selector (always visible, before auth) ────────────────────────────
 _, _lc2 = st.columns([8, 1])
 with _lc2:
-    _lang_choice = st.selectbox(
-        t("lang_label"),
-        ["Deutsch 🇩🇪", "English 🇬🇧"],
+    _lang_choice = st.radio(
+        "",
+        ["DE", "EN"],
         index=0 if st.session_state.lang == "de" else 1,
+        horizontal=True,
         label_visibility="collapsed",
         key="_lang_sel",
     )
-    _new_lang = "de" if _lang_choice.startswith("Deutsch") else "en"
+    _new_lang = "de" if _lang_choice == "DE" else "en"
     if _new_lang != st.session_state.lang:
         st.session_state.lang = _new_lang
         st.rerun()
@@ -354,8 +398,9 @@ if not st.session_state.authenticated:
     st.markdown("<br>", unsafe_allow_html=True)
     _, _mc, _ = st.columns([1, 1.1, 1])
     with _mc:
-        if os.path.exists("clinic_logo.svg"):
-            st.image("clinic_logo.svg", width=120)
+        _login_logo = _logo_html(120)
+        if _login_logo:
+            st.markdown(_login_logo, unsafe_allow_html=True)
         st.markdown(f"### {t('app_title')}")
         st.markdown("---")
         _uname = st.text_input(t("username"), key="_login_u")
@@ -365,6 +410,10 @@ if not st.session_state.authenticated:
             _user = authenticate(_conn, _uname, _pw)
             _conn.close()
             if _user:
+                _saved_lang = st.session_state.get("lang", "de")
+                for _k in list(st.session_state.keys()):
+                    del st.session_state[_k]
+                st.session_state.lang = _saved_lang
                 st.session_state.authenticated = True
                 st.session_state.username = _user[1]
                 st.session_state.is_admin = bool(_user[2])
@@ -399,10 +448,9 @@ st.markdown(
 # ── Header ─────────────────────────────────────────────────────────────────────
 _h1, _h2, _h3 = st.columns([1, 3, 1.6])
 with _h1:
-    if os.path.exists("clinic_logo.png"):
-        st.image("clinic_logo.png", width=160)
-    elif os.path.exists("clinic_logo.svg"):
-        st.image("clinic_logo.svg", width=160)
+    _logo = _logo_html(160)
+    if _logo:
+        st.markdown(_logo, unsafe_allow_html=True)
 with _h2:
     st.markdown(
         f"<h2 style='text-align:center;margin:0;color:#1a1a1a;'>{t('app_title')}</h2>",
@@ -410,10 +458,18 @@ with _h2:
     )
 with _h3:
     st.markdown(
-        f"""<div style='text-align:right;font-size:12px;line-height:1.6;color:#555;'>
-        {t('address')}<br>
-        <span style='font-size:11px;'>{t('logged_as')}: <b>{st.session_state.username}</b></span>
+        f"""<div style='text-align:right;font-size:13px;line-height:1.5;color:#444;'>
+        Clausewitzstr. 2<br>
+        10629 Berlin-Charlottenburg<br>
+        +49 30 6633110<br>
+        info@revitaclinic.de<br>
+        www.revitaclinic.de
         </div>""",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f"<div style='text-align:right;font-size:11px;color:#777;margin-top:4px;'>"
+        f"{t('logged_as')}: <b>{st.session_state.username}</b></div>",
         unsafe_allow_html=True,
     )
     if st.button(t("logout"), key="_logout", type="secondary"):
@@ -844,19 +900,61 @@ with _tab_users:
         _conn.close()
 
         for _, _urow in _users_df.iterrows():
-            _uc1, _uc2, _uc3, _uc4 = st.columns([2, 1, 2, 1])
-            with _uc1:
-                st.markdown(f"**{_urow['username']}**")
-            with _uc2:
-                st.markdown("Admin" if _urow["is_admin"] else "User")
-            with _uc3:
-                st.caption(str(_urow["created_at"])[:16])
-            with _uc4:
-                if _urow["username"] != "Mahri":
-                    if st.button("✕", key=f"_del_{_urow['id']}"):
-                        _conn = get_conn()
-                        delete_user(_conn, int(_urow["id"]))
-                        _conn.close()
+            _uid = int(_urow["id"])
+            _uname_row = str(_urow["username"])
+            _edit_key = f"_editing_{_uid}"
+            if _edit_key not in st.session_state:
+                st.session_state[_edit_key] = False
+
+            with st.container(border=True):
+                _uc1, _uc2, _uc3, _uc4, _uc5 = st.columns([2, 1, 2, 1, 1])
+                with _uc1:
+                    st.markdown(f"**{_uname_row}**")
+                with _uc2:
+                    _is_admin_row = bool(_urow["is_admin"])
+                    st.caption("Admin" if _is_admin_row else "User")
+                with _uc3:
+                    st.caption(str(_urow["created_at"])[:16])
+                with _uc4:
+                    if st.button(t("pw_change"), key=f"_edit_btn_{_uid}", type="secondary"):
+                        st.session_state[_edit_key] = not st.session_state[_edit_key]
                         st.rerun()
-                else:
-                    st.caption("(admin)")
+                with _uc5:
+                    if _uname_row != "Mahri":
+                        if st.button("Delete", key=f"_del_{_uid}", type="secondary"):
+                            _conn = get_conn()
+                            delete_user(_conn, _uid)
+                            _conn.close()
+                            st.rerun()
+
+                if st.session_state[_edit_key]:
+                    st.markdown("---")
+                    _ep1, _ep2, _ep3 = st.columns([2, 2, 1])
+                    with _ep1:
+                        _new_pw_val = st.text_input(
+                            t("pw_new"), type="password", key=f"_pw_{_uid}"
+                        )
+                    with _ep2:
+                        _new_admin_val = st.checkbox(
+                            t("toggle_admin"),
+                            value=_is_admin_row,
+                            key=f"_adm_{_uid}",
+                            disabled=(_uname_row == "Mahri"),
+                        )
+                    with _ep3:
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        if st.button(t("pw_save"), key=f"_pw_save_{_uid}", type="primary"):
+                            _conn = get_conn()
+                            if _new_pw_val:
+                                set_password(_conn, _uid, _new_pw_val)
+                            if _uname_row != "Mahri":
+                                _conn.execute(
+                                    "UPDATE users SET is_admin=? WHERE id=?",
+                                    (int(_new_admin_val), _uid),
+                                )
+                                _conn.commit()
+                            _conn.close()
+                            st.session_state[_edit_key] = False
+                            st.success(t("pw_saved"))
+                            time.sleep(0.6)
+                            st.rerun()
