@@ -111,16 +111,11 @@ def check_password():
 
     st.text_input(
         "Passwort", type="password", on_change=password_entered, key="password"
-    )
     if "password_correct" in st.session_state:
         st.error("😕 Passwort falsch")
     return False
 
 if not check_password():
-    st.stop()
-
-# Rest der App hier...
-```
 
 ### Datenbank-Integration (Optional)
 
@@ -142,9 +137,6 @@ def save_patient_data(data):
 def save_recording(audio_data, patient_id):
     # Upload zu Supabase Storage
     response = supabase.storage.from_("recordings").upload(
-        f"{patient_id}/recording.wav",
-        audio_data
-    )
     return response
 ```
 

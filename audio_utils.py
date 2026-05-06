@@ -1,104 +1,131 @@
-"""audio_utils
+"""audio_utils.py
 
-Utilities for handling audio: saving uploaded audio to disk and transcribing
-locally using a Whisper model when available. Falls back to OpenAI API if the
-local whisper package is not installed but an OpenAI key is configured.
+Utilities for saving audio and transcribing with Whisper small (local).
+Falls back to HuggingFace Inference API, then OpenAI API if local model
+isn't installed.
 """
 
 import io
 import os
 import tempfile
+from datetime import datetime, timezone
 from typing import Optional
+
+import requests
 import streamlit as st
 
 try:
-    # Local whisper (OpenAI's whisper implementation) - uses PyTorch
-    import whisper
-    WHISPER_LOCAL = True
+    import whisper as _whisper
+    _WHISPER_LOCAL = True
 except Exception:
-    WHISPER_LOCAL = False
+    _WHISPER_LOCAL = False
 
 try:
-    from openai import OpenAI
-    OPENAI_AVAILABLE = True
+    from openai import OpenAI as _OpenAI
+    _OPENAI_AVAILABLE = True
 except Exception:
-    OPENAI_AVAILABLE = False
+    _OPENAI_AVAILABLE = False
+
+# Module-level cache keyed by model name
+_whisper_cache: dict = {}
+
+
+def _load_whisper(model_name: str):
+    if model_name not in _whisper_cache:
+        _whisper_cache[model_name] = _whisper.load_model(model_name)
+    return _whisper_cache[model_name]
 
 
 def save_audio_file(audio_bytes, dest_dir: str = "data/audio", filename: Optional[str] = None) -> str:
-    """Save an uploaded audio-like object to disk and return the path.
-
-    audio_bytes is expected to be a BytesIO-like object (has getvalue()).
-    """
+    """Save uploaded audio to disk and return the path."""
     os.makedirs(dest_dir, exist_ok=True)
-
     if filename is None:
-        from datetime import datetime
-        ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         filename = f"recording_{ts}.webm"
-
     path = os.path.join(dest_dir, filename)
     data = audio_bytes.getvalue() if hasattr(audio_bytes, "getvalue") else audio_bytes
     with open(path, "wb") as f:
         f.write(data)
-
     return path
 
 
 def transcribe_with_whisper(audio_bytes, model_name: str = "small", language: Optional[str] = "de") -> str:
-    """Transcribe audio using a local Whisper model if available, otherwise
-    attempt the OpenAI audio transcription API. Returns a plain transcript
-    (string).
+    """Transcribe audio. Tries in order:
+    1. Local Whisper model (openai-whisper package)
+    2. HuggingFace Inference API
+    3. OpenAI Whisper API
+    Returns plain transcript string.
     """
     if audio_bytes is None:
         return ""
 
-    # Save to a temp file for the model to read
+    data = audio_bytes.getvalue() if hasattr(audio_bytes, "getvalue") else audio_bytes
+
     with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
-        data = audio_bytes.getvalue() if hasattr(audio_bytes, "getvalue") else audio_bytes
         tmp.write(data)
         tmp_path = tmp.name
 
-    transcript_text = ""
+    transcript = ""
     try:
-        if WHISPER_LOCAL:
+        # 1. Local Whisper
+        if _WHISPER_LOCAL:
             try:
-                model = whisper.load_model(model_name)
-                # whisper returns a dict with 'text'
+                model = _load_whisper(model_name)
                 result = model.transcribe(tmp_path, language=language)
-                transcript_text = result.get("text", "")
+                transcript = result.get("text", "").strip()
             except Exception as e:
                 st.warning(f"Lokale Whisper-Transkription fehlgeschlagen: {e}")
-                transcript_text = ""
 
-        # If local not available or failed, try OpenAI API if configured
-        if (not transcript_text) and OPENAI_AVAILABLE:
-            try:
-                api_key = st.secrets.get("OPENAI_API_KEY", None)
-                if api_key:
-                    client = OpenAI(api_key=api_key)
+        # 2. HuggingFace Inference API
+        if not transcript:
+            hf_token = os.environ.get("HUGGINGFACE_API_KEY") or _secret("HUGGINGFACE_API_KEY")
+            if hf_token:
+                try:
+                    hf_model = f"openai/whisper-{model_name}"
+                    headers = {"Authorization": f"Bearer {hf_token}"}
                     with open(tmp_path, "rb") as fh:
-                        # name attribute helps some clients decide format
-                        file_bytes = io.BytesIO(fh.read())
-                        file_bytes.name = os.path.basename(tmp_path)
-                        transcript = client.audio.transcriptions.create(
-                            model="whisper-1",
-                            file=file_bytes,
-                            language=language
+                        resp = requests.post(
+                            f"https://api-inference.huggingface.co/models/{hf_model}",
+                            headers=headers,
+                            data=fh.read(),
+                            timeout=120,
                         )
-                        transcript_text = transcript.text
-            except Exception as e:
-                st.warning(f"OpenAI-Transkription fehlgeschlagen: {e}")
+                    if resp.status_code == 200:
+                        body = resp.json()
+                        transcript = (body.get("text") or body.get("transcription") or "").strip()
+                    else:
+                        st.warning(f"HuggingFace API {resp.status_code}: {resp.text[:200]}")
+                except Exception as e:
+                    st.warning(f"HuggingFace-Transkription fehlgeschlagen: {e}")
 
+        # 3. OpenAI Whisper API
+        if not transcript and _OPENAI_AVAILABLE:
+            api_key = _secret("OPENAI_API_KEY")
+            if api_key:
+                try:
+                    client = _OpenAI(api_key=api_key)
+                    with open(tmp_path, "rb") as fh:
+                        buf = io.BytesIO(fh.read())
+                        buf.name = os.path.basename(tmp_path)
+                        result = client.audio.transcriptions.create(
+                            model="whisper-1",
+                            file=buf,
+                            language=language,
+                        )
+                        transcript = result.text.strip()
+                except Exception as e:
+                    st.warning(f"OpenAI-Transkription fehlgeschlagen: {e}")
     finally:
         try:
             os.unlink(tmp_path)
         except Exception:
             pass
 
-    if not transcript_text:
-        # fallback short message
-        return ""
+    return transcript
 
-    return transcript_text
 
+def _secret(key: str) -> Optional[str]:
+    try:
+        return st.secrets.get(key)
+    except Exception:
+        return None

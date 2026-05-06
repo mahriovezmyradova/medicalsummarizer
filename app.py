@@ -5,6 +5,7 @@ import sqlite3
 import pandas as pd
 from fpdf import FPDF
 from audio_utils import transcribe_with_whisper, save_audio_file
+from storage_utils import upload_file_to_r2
 from summarizer import extractive_summary
 import time
 import base64
@@ -643,6 +644,14 @@ with col2:
             # Save audio to disk and transcribe
             try:
                 audio_path = save_audio_file(audio_bytes)
+                # Try uploading to R2/S3 if configured
+                try:
+                    remote = upload_file_to_r2(audio_path)
+                    if remote:
+                        audio_path = remote
+                except Exception:
+                    # keep local path if upload fails
+                    pass
             except Exception as e:
                 st.error(f"Fehler beim Speichern der Audiodatei: {e}")
                 audio_path = None

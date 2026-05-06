@@ -1,15 +1,21 @@
 streamlit>=1.31.0
 pandas>=2.0.0
-fpdf2>=2.7.7  # This is the correct package name
+fpdf2>=2.7.7
 python-dateutil>=2.8.2
 
 reportlab>=4.0.0
 Pillow>=10.0.0
 openai>=1.10.0
 
-# For local whisper transcription and extractive summarization
-whisper @ git+https://github.com/openai/whisper.git
-torch>=1.12.0 ; platform_system != 'Darwin' or platform_machine != 'arm64'
+# ASR
+openai-whisper>=20231117
+
+# Extractive summarization (BERT)
 sentence-transformers>=2.2.2
 scikit-learn>=1.2.2
 numpy>=1.24.0
+
+# Storage / inference fallback
+requests>=2.31.0
+huggingface-hub>=0.16.4
+boto3>=1.26.0
